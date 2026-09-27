@@ -34,6 +34,7 @@
 
 	aliases {
 		ethernet0 = &gmac1;
+		ethernet1 = &r8111h;
 		mmc0 = &sdhci;
 		mmc1 = &sdmmc;
 		serial0 = &uart0;
@@ -223,15 +224,19 @@
 &cpu2 { cpu-supply = <&vdd_arm>; };
 &cpu3 { cpu-supply = <&vdd_arm>; };
 
-/* ---- 网口1: SoC 内置 gmac1, RGMII 接 RTL8211F 千兆 PHY (官方 rev03) ---- */
+/* ---- 网口1: SoC 内置 gmac1, RGMII 接 RTL8211F 千兆 PHY ----
+ * 时序参数严格按官方 rev03: rgmii-rxid + tx_delay=<0x30>
+ * (官方注释: 用 rgmii-rxid 关闭 SoC 内部 rx delay; reset 20ms/100ms 适配 RTL8211F)
+ * pinctrl 必须含 eth_pins (gpio3 PB5 = PHY 的 25M 参考时钟输出脚, 缺了 PHY 不工作).
+ */
 &gmac1 {
 	clock_in_out = "output";
 	phy-handle = <&rgmii_phy>;
-	phy-mode = "rgmii-id";
-	phy-supply = <&vcc_3v3>;
+	phy-mode = "rgmii-rxid";
+	tx_delay = <0x30>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&rgmii_miim>, <&rgmii_tx_bus2>, <&rgmii_rx_bus2>,
-		    <&rgmii_rgmii_clk>, <&rgmii_rgmii_bus>;
+		    <&rgmii_rgmii_clk>, <&rgmii_rgmii_bus>, <&eth_pins>;
 	status = "okay";
 };
 
@@ -247,7 +252,11 @@
 	};
 };
 
-/* ---- 网口2: PCIe 上 RTL8111H 千兆网卡 (官方 rev03: pcie reset gpio4 RK_PC0) ---- */
+/* ---- 网口2: PCIe 上 RTL8111H 千兆网卡 ----
+ * 官方 rev03: pcie reset-gpios gpio4 RK_PC0 高有效 + pciem1_pins.
+ * 必须带 pcie 子节点(含 local-mac-address), 否则 RTL8111H 拿不到 MAC 地址;
+ * 补 resets/reset-names/rockchip,skip-* (Rockchip pcie-dw 驱动的复位与重试控制).
+ */
 &combphy {
 	status = "okay";
 };
@@ -256,7 +265,22 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pciem1_pins>;
 	reset-gpios = <&gpio4 RK_PC0 GPIO_ACTIVE_HIGH>;
+	resets = <&cru SRST_PCIE_POWER_UP>, <&cru SRST_P_PCIE>;
+	reset-names = "pwr", "pipe";
+	rockchip,skip-scan-in-resume;
+	rockchip,skip-hw-retry;
 	status = "okay";
+
+	pcie@0,0 {
+		reg = <0x00000000 0 0 0 0>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+
+		r8111h: pcie@0,0 {
+			reg = <0x000000 0 0 0 0>;
+			local-mac-address = [ 00 00 00 00 00 00 ];
+		};
+	};
 };
 
 &gpu {
