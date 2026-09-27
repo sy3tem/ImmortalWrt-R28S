@@ -44,27 +44,40 @@ else
 fi
 
 # ---- 3) board.d 网口映射 ----
+# ★compatible 前缀必须与 dts 一致 = "friendlyelec,nanopi-r28s"(不是 friendlyarm!)★
+# 之前错写成 friendlyarm,nanopi-r28s 挂到 r3s 组, board_detect 用 dts compatible
+# (friendlyelec,nanopi-r28s) 匹配 -> 永远匹配不到 -> 网口映射失效只剩默认单口.
+# 按官方 friendlywrt 02_network 原版: wan=eth0 lan=eth1(独立 case),
+# 并在 MAC 段补 wan_mac/lan_mac(官方从 mmc cid 生成, lan=wan+1).
 NET="$BOARD_D/02_network"
-if [ -f "$NET" ] && ! grep -q "friendlyarm,nanopi-r28s" "$NET"; then
-	# 在 friendlyarm,nanopi-r3s 所在 case 组(lan=eth1, wan=eth0)后插入 r28s
-	# R28S: gmac1(eth?) + RTL8111H PCIe(eth?), 枚举顺序 PCIe 通常靠前,
-	# 采用与 R3S 相同映射: lan=eth1 wan=eth0; 首刷后用 dmesg 核对再微调
-	sed -i 's/friendlyarm,nanopi-r3s|\\/friendlyarm,nanopi-r3s|\\\n\tfriendlyarm,nanopi-r28s|\\/' "$NET"
+if [ -f "$NET" ] && ! grep -q "friendlyelec,nanopi-r28s" "$NET"; then
+	# 网口映射: 在 ucidef_set_interfaces_lan_wan 主 case 末尾(board_config_update 前)插入独立分支
+	sed -i "/ucidef_set_interface_wan 'eth0'/i\\
+friendlyelec,nanopi-r28s)\\
+	ucidef_set_interface_wan 'eth0'\\
+	ucidef_set_interface \"lan\" device \"eth1\" protocol \"static\" ipaddr \"192.168.10.1\"\\
+	;;\\
+" "$NET"
+	# MAC 生成: 在 wan_mac=...mmcblk* 的 case 组里补 r28s(跟在 nanopi-r3s 同组写法)
+	sed -i 's/friendlyelec,nanopi-r3s|\\/friendlyelec,nanopi-r3s|\\\n\tfriendlyelec,nanopi-r28s|\\/' "$NET"
 	echo "[3] 02_network mapping added"
 else
 	echo "[3] 02_network already has r28s or file missing, skip"
 fi
 
 # ---- 4) board.d LED 映射 ----
-# 注意: 不能整文件覆盖 01_leds(会丢上游 base-files 开头的 . /lib/functions include,
-# 导致 ucidef_set_led_default: not found). 只能 sed 在 case 里追加分支.
-# LED 名必须写 dts 主线全名 "颜色:功能"(sysfs 名), 不能写官方旧 label(sys_led 找不到).
-# R28S dts: sys=green:status / led1=green:lan / led2=green:wan.
+# 按官方 friendlywrt 01_leds 原版写法(friendlyelec,nanopi-r28s 段):
+#   ucidef_set_led_netdev "wan" "WAN" "wan_led" "eth0"
+#   ucidef_set_led_netdev "lan" "LAN" "lan_led" "eth1"
+# LED 名必须用 dts 的 label 名(wan_led/lan_led/sys_led), 与官方 LuCI 网口图标一致.
+# 主线 6.18 led_compose_name 有 label 属性即以其为 LED 名, 与官方完全对上.
+# 注意: 只 sed 追加 case 分支, 不整文件覆盖(覆盖会丢上游 base-files 开头的 include).
 LEDS="$BOARD_D/01_leds"
-if [ -f "$LEDS" ] && ! grep -q "friendlyarm,nanopi-r28s" "$LEDS"; then
+if [ -f "$LEDS" ] && ! grep -q "friendlyelec,nanopi-r28s" "$LEDS"; then
 	sed -i "/board_config_update/i\\
-friendlyarm,nanopi-r28s)\\
-	ucidef_set_led_default \"status\" \"status\" \"green:status\" \"1\" ;;\\
+friendlyelec,nanopi-r28s)\\
+	ucidef_set_led_netdev \"wan\" \"WAN\" \"wan_led\" \"eth0\"\\
+	ucidef_set_led_netdev \"lan\" \"LAN\" \"lan_led\" \"eth1\" ;;\\
 " "$LEDS"
 	echo "[4] 01_leds mapping added"
 else
