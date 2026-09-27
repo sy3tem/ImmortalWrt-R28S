@@ -244,6 +244,7 @@
 	rgmii_phy: ethernet-phy@1 {
 		compatible = "ethernet-phy-ieee802.3-c22";
 		reg = <0x1>;
+		realtek,ledsel = <0xae00>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&gmac1_rstn_l>;
 		reset-assert-us = <20000>;
@@ -256,6 +257,16 @@
  * 官方 rev03: pcie reset-gpios gpio4 RK_PC0 高有效 + pciem1_pins.
  * 必须带 pcie 子节点(含 local-mac-address), 否则 RTL8111H 拿不到 MAC 地址;
  * 补 resets/reset-names/rockchip,skip-* (Rockchip pcie-dw 驱动的复位与重试控制).
+ *
+ * ★关键(引脚复用冲突): RK3528 主线默认 pciem1_pins = gpio1 RK_PA0/PA1/PA2,
+ *   而 R28S 的 WiFi(AIC8800) 在 SDIO0, sdio0-bus4 同样占用 gpio1 RK_PA0~PA3.
+ *   二者物理互斥 -> PCIe 不能用 m1 那组引脚.
+ *   官方解法: 把 pciem1_pins 重定义为 gpio4 RK_PC0(普通GPIO手动reset),
+ *   这样 PCIe 的 pinctrl 申请 gpio4 PC0, 不再占用 gpio1, SDIO0/WiFi 才能用.
+ *   漏掉下面这个 &pciem1_pins 覆盖块, 会导致:
+ *     - pinctrl 报 "pin gpio1-0 already requested by pcie; cannot claim for sdio0"
+ *     - RTL8111H 的 perstn/waken 没配 -> r8169 "Unable to change power state D3cold->D0" 挂掉
+ *     - SDIO0 抢不到引脚 -> WiFi 也起不来
  */
 &combphy {
 	status = "okay";
@@ -281,6 +292,13 @@
 			local-mac-address = [ 00 00 00 00 00 00 ];
 		};
 	};
+};
+
+/* 把 PCIe m1 引脚组从默认的 gpio1(与SDIO0冲突) 重定义为 gpio4 RK_PC0 */
+&pciem1_pins {
+	rockchip,pins =
+		/* pcie_reset_gpio */
+		<4 RK_PC0 RK_FUNC_GPIO &pcfg_pull_none>;
 };
 
 &gpu {
