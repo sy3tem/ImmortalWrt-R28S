@@ -1,0 +1,6 @@
+*.txt text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.dts text eol=lf
+*.dtsi text eol=lf
+*.mk text eol=lf
