@@ -29,6 +29,20 @@ else
 	echo "[2] device def already present, skip"
 fi
 
+# ---- 2.5) 让 r28s 触发编译 zero2 的 U-Boot ----
+# 现象: pine64-img 打包时 dd 找不到 nanopi-zero2-rk3528-u-boot-rockchip.bin
+# 根因: uboot-rockchip/Makefile 里 U-Boot/nanopi-zero2-rk3528 的 BUILD_DEVICES 只含
+#       friendlyarm_nanopi-zero2, 不含新增的 friendlyarm_nanopi-r28s, 故编 r28s 时不编该 U-Boot
+# 修法: 把 r28s 追加进该 target 的 BUILD_DEVICES 列表
+UBOOT_MK="./package/boot/uboot-rockchip/Makefile"
+if [ -f "$UBOOT_MK" ] && ! grep -A3 "define U-Boot/nanopi-zero2-rk3528" "$UBOOT_MK" | grep -q "friendlyarm_nanopi-r28s"; then
+	sed -i '/define U-Boot\/nanopi-zero2-rk3528/,/endef/ s/friendlyarm_nanopi-zero2$/friendlyarm_nanopi-zero2 \\\n    friendlyarm_nanopi-r28s/' "$UBOOT_MK"
+	echo "[2.5] nanopi-zero2-rk3528 U-Boot BUILD_DEVICES += r28s"
+	grep -A5 "define U-Boot/nanopi-zero2-rk3528" "$UBOOT_MK" | head -8
+else
+	echo "[2.5] zero2 U-Boot already covers r28s or mk missing, skip"
+fi
+
 # ---- 3) board.d 网口映射 ----
 NET="$BOARD_D/02_network"
 if [ -f "$NET" ] && ! grep -q "friendlyarm,nanopi-r28s" "$NET"; then
