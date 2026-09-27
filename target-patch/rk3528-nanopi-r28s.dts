@@ -61,16 +61,21 @@
 		};
 	};
 
-	/* 板载 3 个 GPIO LED: SYS(gpio4 PB0) / LED1(PB1) / LED2(PB3), 高有效 */
+	/* 板载 3 个 GPIO LED: SYS(gpio4 PB0) / LED1(PB1) / LED2(PB3), 高有效
+	 * 官方 BSP uboot board_led.c 读 /leds/sys_led 的 gpios 属性(与 color 无关),
+	 * 实测 SYS 灯是绿色(官方 FriendlyWrt 下 sys 绿灯常亮).
+	 * dts 的 color/function 只决定 sysfs 名(color:function), 不影响硬件颜色.
+	 * 故 sys 用 GREEN(不用 red), 消除"sys 闪红灯"违和感 + green:status_1 撞名.
+	 */
 	leds {
 		compatible = "gpio-leds";
 		pinctrl-names = "default";
 		pinctrl-0 = <&led_sys>, <&led1>, <&led2>;
 
 		led-0 {
-			color = <LED_COLOR_ID_RED>;
+			color = <LED_COLOR_ID_GREEN>;
 			default-state = "on";
-			function = LED_FUNCTION_HEARTBEAT;
+			function = LED_FUNCTION_STATUS;
 			gpios = <&gpio4 RK_PB0 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "heartbeat";
 		};
@@ -78,14 +83,14 @@
 		led-1 {
 			color = <LED_COLOR_ID_GREEN>;
 			default-state = "on";
-			function = LED_FUNCTION_STATUS;
+			function = LED_FUNCTION_LAN;
 			gpios = <&gpio4 RK_PB1 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "default-on";
 		};
 
 		led-2 {
 			color = <LED_COLOR_ID_GREEN>;
-			function = LED_FUNCTION_STATUS;
+			function = LED_FUNCTION_WAN;
 			gpios = <&gpio4 RK_PB3 GPIO_ACTIVE_HIGH>;
 		};
 	};
@@ -424,7 +429,11 @@
 	status = "okay";
 };
 
-/* WiFi: AIC8800 on SDIO0 (节点保留; 主线暂无 aic8800 驱动, 不影响有线启动) */
+/* WiFi: AIC8800 on SDIO0
+ * 时序保守用 cap-sd-highspeed(<=50MHz), 不用 sd-uhs-sdr104 —
+ * AIC8800 对高速敏感, 主线跑 SDR104 会 "error -84 whilst initialising SDIO card"
+ * + aic8800_fdrv 探针失败(实测). vqmmc 用 1.8V IO.
+ */
 &sdio0 {
 	max-frequency = <150000000>;
 	no-sd;
@@ -432,6 +441,7 @@
 	supports-sdio;
 	bus-width = <4>;
 	disable-wp;
+	cap-sd-highspeed;
 	cap-sdio-irq;
 	keep-power-in-suspend;
 	non-removable;

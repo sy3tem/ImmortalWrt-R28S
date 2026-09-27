@@ -56,16 +56,17 @@ else
 fi
 
 # ---- 4) board.d LED 映射 ----
+# 注意: 不能整文件覆盖 01_leds(会丢上游 base-files 开头的 . /lib/functions include,
+# 导致 ucidef_set_led_default: not found). 只能 sed 在 case 里追加分支.
+# LED 名必须写 dts 主线全名 "颜色:功能"(sysfs 名), 不能写官方旧 label(sys_led 找不到).
+# R28S dts: sys=green:status / led1=green:lan / led2=green:wan.
 LEDS="$BOARD_D/01_leds"
 if [ -f "$LEDS" ] && ! grep -q "friendlyarm,nanopi-r28s" "$LEDS"; then
-	# 参照其它设备格式, 把 r28s 的 sys_led 设为 status LED
-	# 直接在该文件的 case 里追加一个分支(放在 board_config_update 之前的 case 内)
-	# 采用最简单的 uci 写法, 与 openwrt rockchip 01_leds 兼容
 	sed -i "/board_config_update/i\\
-	friendlyarm,nanopi-r28s)\\
-		ucidef_set_led_default \"status\" \"status\" \"sys_led\" \"1\" ;;\\
-" "$LEDS" 2>/dev/null || echo "[4] 01_leds patch skipped (format varies, non-fatal)"
-	echo "[4] 01_leds mapping attempted"
+friendlyarm,nanopi-r28s)\\
+	ucidef_set_led_default \"status\" \"status\" \"green:status\" \"1\" ;;\\
+" "$LEDS"
+	echo "[4] 01_leds mapping added"
 else
 	echo "[4] 01_leds already has r28s or file missing, skip"
 fi
