@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: MIT
+#CI项目: NanoPi R28S (RK3528A) ImmortalWrt 云编译
+name: R28S-ALL
+
+on:
+  #自动编译：当Auto-Clean运行完成后
+  workflow_run:
+    workflows: ["Auto-Clean"]
+    types:
+      - completed
+  #手动编译
+  workflow_dispatch:
+    inputs:
+      CONFIGS:
+        description: '指定要编译的配置，JSON数组，如 ["RK3528-R28S-FULL"]；留空则编译全部。'
+        required: false
+        type: string
+      PACKAGE:
+        description: '手动调整插件包，多个请用\n符号隔开。'
+        required: false
+        type: string
+      TEST:
+        description: '仅输出配置文件，不编译固件。'
+        default: 'false'
+        required: false
+        type: boolean
+
+permissions: write-all
+
+jobs:
+  config:
+    name: ${{matrix.CONFIG}}
+    strategy:
+      fail-fast: false
+      matrix:
+        CONFIG: ${{ fromJSON(inputs.CONFIGS || '["RK3528-R28S-FULL"]') }}
+        SOURCE: [immortalwrt/immortalwrt]
+        BRANCH: [master]
+
+    uses: ./.github/workflows/WRT-CORE.yml
+    with:
+      WRT_CONFIG: ${{matrix.CONFIG}}
+      WRT_THEME: argon
+      WRT_NAME: DWRT
+      WRT_SSID: DWRT
+      WRT_WORD: 12345678
+      WRT_IP: 192.168.10.1
+      WRT_PW: password
+      WRT_REPO: https://github.com/${{matrix.SOURCE}}.git
+      WRT_BRANCH: ${{matrix.BRANCH}}
+      WRT_SOURCE: ${{matrix.SOURCE}}
+      WRT_PACKAGE: ${{inputs.PACKAGE}}
+      WRT_TEST: ${{inputs.TEST}}
