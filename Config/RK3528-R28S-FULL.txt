@@ -6,7 +6,16 @@ CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_friendlyarm_nanopi-r28s=y
 
 #WIFI驱动(AIC8800 on SDIO0, WiFi6; 主线有 kmod-aic8800-sdio, 设备定义里已含)
 CONFIG_PACKAGE_wpad-openssl=y
-#RTL8111H 第二网口驱动在设备定义 DEVICE_PACKAGES(kmod-r8169) 已含
+#第二网口 RTL8111H(PCIe) + AIC8800 WiFi 驱动必须内置=y, 不能=m
+#(squashfs 根文件系统里 =m 的模块不会预装, 网口2/WiFi 会起不来)
+CONFIG_PACKAGE_kmod-r8169=y
+CONFIG_PACKAGE_kmod-aic8800-sdio=y
+#AIC8800 固件(包名是 aic8800-sdio-firmware, 不是 kmod- 前缀; kmod-aic8800-sdio 会自动依赖, 但显式写保险)
+CONFIG_PACKAGE_aic8800-sdio-firmware=y
+CONFIG_PACKAGE_kmod-mmc=y
+#AIC8800 蓝牙(SDIO 复用)
+CONFIG_AIC8800_SDIO_BT_SUPPORT=y
+CONFIG_PACKAGE_kmod-bluetooth=y
 
 #组件调整
 CONFIG_TARGET_KERNEL_PARTSIZE=128
