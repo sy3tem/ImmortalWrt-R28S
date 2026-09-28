@@ -58,6 +58,36 @@ EOF
 chmod +x "$UDIR/99-fix-istore-taskd"
 echo "uci-defaults 99-fix-istore-taskd installed!"
 
+#首启脚本: IPv6 relay 模式(逐字照抄 OpenWrt 官方 wiki 的 "IPv6 relay" 配置)
+#背景: 上级光猫是 ISP 桥接 ONT, 只给 WAN 单个 /64、不下发 DHCPv6-PD 前缀.
+#   官方默认 RA server 模式靠 PD 分前缀, 此光猫下 LAN 拿不到公网 v6.
+#   正确解 = relay 模式(odhcpd 把上游 RA/NDP/DHCPv6 转发到 LAN, 客户端直接从上游拿公网 v6).
+#★三个坑(血泪教训): 别加 ra_flags/ra_management(官方 relay 配置没有, 加了反而干扰);
+#   network.wan6 没有 "option relay" 这个有效选项(netifd 不认); 改完只重启 odhcpd 别 network restart.
+cat > "$UDIR/98-ipv6-relay" <<'EOF'
+#!/bin/sh
+# 仅当 wan6 存在且 lan 尚未配成 relay 时写入(幂等, 避免覆盖用户后续手改)
+if uci -q get network.wan6 >/dev/null && [ "$(uci -q get dhcp.lan.ra)" != "relay" ]; then
+	# lan: 保留 dhcpv4=server(IPv4 DHCP 照常), 只把 v6 三项切到 relay
+	uci set dhcp.lan.dhcpv6='relay'
+	uci set dhcp.lan.ra='relay'
+	uci set dhcp.lan.ndp='relay'
+	# 清掉默认 RA server 模式带的 ra_flags(relay 模式不需要)
+	uci -q delete dhcp.lan.ra_flags
+	# wan6: relay + master(官方 wiki 逐字)
+	uci set dhcp.wan6='dhcp'
+	uci set dhcp.wan6.interface='wan6'
+	uci set dhcp.wan6.master='1'
+	uci set dhcp.wan6.ra='relay'
+	uci set dhcp.wan6.dhcpv6='relay'
+	uci set dhcp.wan6.ndp='relay'
+	uci commit dhcp
+fi
+exit 0
+EOF
+chmod +x "$UDIR/98-ipv6-relay"
+echo "uci-defaults 98-ipv6-relay installed!"
+
 #配置文件修改
 echo "CONFIG_PACKAGE_luci=y" >> ./.config
 echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
