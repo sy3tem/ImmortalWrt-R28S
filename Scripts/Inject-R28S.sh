@@ -45,43 +45,95 @@ fi
 
 # ---- 3) board.d 网口映射 ----
 # ★compatible 前缀必须与 dts 一致 = "friendlyelec,nanopi-r28s"(不是 friendlyarm!)★
-# 之前错写成 friendlyarm,nanopi-r28s 挂到 r3s 组, board_detect 用 dts compatible
-# (friendlyelec,nanopi-r28s) 匹配 -> 永远匹配不到 -> 网口映射失效只剩默认单口.
-# 按官方 friendlywrt 02_network 原版: wan=eth0 lan=eth1(独立 case),
-# 并在 MAC 段补 wan_mac/lan_mac(官方从 mmc cid 生成, lan=wan+1).
+# 实测 ImmortalWrt 02_network 结构: 两个 case "$board" in ——
+#   rockchip_setup_interfaces(){ case "$board" in ... }  <- 网口映射(要插这里)
+#   rockchip_setup_macs(){ case "$board" in ... }        <- MAC 地址(不能插这)
+# 所以必须【只在第一个 case "$board" in 之后插入一次】, 用 done 标志防止二次插入
+# (设备端血泪教训: 无标志会双插入, 还需额外去重).
+# R28S = 双口(非switch): lan=eth1 wan=eth0, 与上游 friendlyarm,nanopi-r3s 等同组写法.
 NET="$BOARD_D/02_network"
 if [ -f "$NET" ] && ! grep -q "friendlyelec,nanopi-r28s" "$NET"; then
-	# 网口映射: 在 ucidef_set_interfaces_lan_wan 主 case 末尾(board_config_update 前)插入独立分支
-	sed -i "/ucidef_set_interface_wan 'eth0'/i\\
-friendlyelec,nanopi-r28s)\\
-	ucidef_set_interface_wan 'eth0'\\
-	ucidef_set_interface \"lan\" device \"eth1\" protocol \"static\" ipaddr \"192.168.10.1\"\\
-	;;\\
-" "$NET"
-	# MAC 生成: 在 wan_mac=...mmcblk* 的 case 组里补 r28s(跟在 nanopi-r3s 同组写法)
-	sed -i 's/friendlyelec,nanopi-r3s|\\/friendlyelec,nanopi-r3s|\\\n\tfriendlyelec,nanopi-r28s|\\/' "$NET"
-	echo "[3] 02_network mapping added"
+	awk '!done && /case "\$board" in/ {
+		print;
+		print "\tfriendlyelec,nanopi-r28s)";
+		print "\t\tucidef_set_interfaces_lan_wan \x27eth1\x27 \x27eth0\x27";
+		print "\t\t;;";
+		done=1;
+		next
+	} 1' "$NET" > "$NET.tmp" && mv "$NET.tmp" "$NET"
+	# 校验: 只插入一次(出现 1 次 r28s), 且在 interfaces 函数内
+	cnt=$(grep -c "friendlyelec,nanopi-r28s" "$NET")
+	echo "[3] 02_network mapping added (r28s count=$cnt, expect 1)"
 else
 	echo "[3] 02_network already has r28s or file missing, skip"
 fi
 
 # ---- 4) board.d LED 映射 ----
 # 按官方 friendlywrt 01_leds 原版写法(friendlyelec,nanopi-r28s 段):
-#   ucidef_set_led_netdev "wan" "WAN" "wan_led" "eth0"
-#   ucidef_set_led_netdev "lan" "LAN" "lan_led" "eth1"
+#   ucidef_set_led_netdev "wan" "WAN" "wan_led" "eth0" / "lan" "LAN" "lan_led" "eth1"
 # LED 名必须用 dts 的 label 名(wan_led/lan_led/sys_led), 与官方 LuCI 网口图标一致.
 # 主线 6.18 led_compose_name 有 label 属性即以其为 LED 名, 与官方完全对上.
-# 注意: 只 sed 追加 case 分支, 不整文件覆盖(覆盖会丢上游 base-files 开头的 include).
+# ★在 'case $board in' 之【后】插入(分支进 case 内部)★
+#   之前插在 board_config_update 前 -> 跑到 case 语句外 -> "syntax error: unexpected )".
 LEDS="$BOARD_D/01_leds"
 if [ -f "$LEDS" ] && ! grep -q "friendlyelec,nanopi-r28s" "$LEDS"; then
-	sed -i "/board_config_update/i\\
-friendlyelec,nanopi-r28s)\\
-	ucidef_set_led_netdev \"wan\" \"WAN\" \"wan_led\" \"eth0\"\\
-	ucidef_set_led_netdev \"lan\" \"LAN\" \"lan_led\" \"eth1\" ;;\\
-" "$LEDS"
-	echo "[4] 01_leds mapping added"
+	awk '!done && /^case \$board in/ {
+		print;
+		print "friendlyelec,nanopi-r28s)";
+		print "\tucidef_set_led_netdev \"wan\" \"WAN\" \"wan_led\" \"eth0\"";
+		print "\tucidef_set_led_netdev \"lan\" \"LAN\" \"lan_led\" \"eth1\" ;;";
+		done=1;
+		next
+	} 1' "$LEDS" > "$LEDS.tmp" && mv "$LEDS.tmp" "$LEDS"
+	cnt=$(grep -c "friendlyelec,nanopi-r28s" "$LEDS")
+	echo "[4] 01_leds mapping added (r28s count=$cnt, expect 1)"
 else
 	echo "[4] 01_leds already has r28s or file missing, skip"
+fi
+
+# ---- 5) 首启清理 boot 分区自动挂载(对齐官方干净挂载点) ----
+# 官方 friendlywrt 在 setup.sh 的 clean_fstab() 里首启删掉除 /opt 外所有 mount 项,
+# 所以官方挂载点干净, 没有 /mnt/mmcblk0p1. 我们照搬: uci-defaults 首启脚本把
+# block detect 自动生成的 mmcblk0p1(boot 分区, 128MB 装 kernel/dtb)挂载项删掉.
+# boot 分区系统启动用不到(内核/dtb 由 u-boot 直接读), 挂出来纯属碍眼.
+UDIR="$RK_DIR/armv8/base-files/etc/uci-defaults"
+mkdir -p "$UDIR"
+cat > "$UDIR/99-r28s-clean-mount" <<'EOF'
+#!/bin/sh
+# R28S: 删掉 block-mount 自动挂载的 eMMC boot 分区(/mnt/mmcblk0p1), 对齐官方干净挂载点
+index=0
+while uci -q get fstab.@mount[$index]; do
+	target=$(uci -q get fstab.@mount[$index].target)
+	uuid_dev=$(uci -q get fstab.@mount[$index].device)
+	case "$target" in
+	/mnt/mmcblk0p1|/mnt/mmcblk2p1)
+		uci -q del fstab.@mount[$index] ;;
+	*)
+		index=$((index + 1)) ;;
+	esac
+done
+uci commit fstab
+# 顺手卸载已挂上的(若本次已挂)
+umount /mnt/mmcblk0p1 2>/dev/null
+exit 0
+EOF
+chmod +x "$UDIR/99-r28s-clean-mount"
+echo "[5] uci-defaults clean-mount installed"
+
+# ---- 6) 移植官方 eMMC Tools (LuCI 应用) ----
+# 官方 friendlyarm/friendlywrt_device_common/emmc-tools/ 只有预编译 apk(无源码).
+# 官方用 install.sh 在构建时 apk --root add 离线装进 rootfs.
+# 我们把 apk 拷进固件 /root/, 首刷后用户手动 apk add --allow-untrusted 试装,
+# 验证与 ImmortalWrt APK 兼容后再固化(避免不兼容把构建搞挂).
+EMMC_SRC="$PATCH_DIR/emmc-tools"
+ROOT_FILES="$RK_DIR/armv8/base-files/root"
+if [ -f "$EMMC_SRC/luci-app-emmc-tools.apk" ]; then
+	mkdir -p "$ROOT_FILES/emmc-tools"
+	cp -f "$EMMC_SRC/luci-app-emmc-tools.apk" "$ROOT_FILES/emmc-tools/"
+	cp -f "$EMMC_SRC/luci-i18n-emmc-tools-zh-cn.apk" "$ROOT_FILES/emmc-tools/" 2>/dev/null || true
+	echo "[6] emmc-tools apk -> /root/emmc-tools/ (手动试装)"
+else
+	echo "[6] emmc-tools apk not found, skip"
 fi
 
 echo "===== Inject done ====="
