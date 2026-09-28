@@ -100,21 +100,30 @@ UDIR="$RK_DIR/armv8/base-files/etc/uci-defaults"
 mkdir -p "$UDIR"
 cat > "$UDIR/99-r28s-clean-mount" <<'EOF'
 #!/bin/sh
-# R28S: 删掉 block-mount 自动挂载的 eMMC boot 分区(/mnt/mmcblk0p1), 对齐官方干净挂载点
+# R28S: 清理 block-mount 自动挂载, 对齐官方干净挂载点
+# 1) 关掉匿名挂载(anon_mount/anon_swap): 这是 /opt 大分区被重复挂到 /mnt/mmcblk0p3 的
+#    元凶 —— block-mount 早期 anon_mount 会把没在 fstab 显式占位的分区自动挂 /mnt/<dev>.
+#    官方 friendlywrt 没关它(靠 /opt 项占位屏蔽), 但我们的 /opt 项是 init.d 后写的,
+#    早期 block-mount 读不到 → anon_mount 兜底挂 /mnt. 关掉它最干净(副作用: 插U盘不自动挂/mnt).
+uci set fstab.@global[0].anon_mount='0'
+uci set fstab.@global[0].anon_swap='0'
+# 2) 删掉非 /opt 的自动挂载项(boot 分区 /mnt/mmcblk0p1 等), 保留 /opt
 index=0
 while uci -q get fstab.@mount[$index]; do
 	target=$(uci -q get fstab.@mount[$index].target)
-	uuid_dev=$(uci -q get fstab.@mount[$index].device)
 	case "$target" in
-	/mnt/mmcblk0p1|/mnt/mmcblk2p1)
-		uci -q del fstab.@mount[$index] ;;
-	*)
+	/opt)
 		index=$((index + 1)) ;;
+	*)
+		uci -q del fstab.@mount[$index] ;;
 	esac
 done
 uci commit fstab
-# 顺手卸载已挂上的(若本次已挂)
-umount /mnt/mmcblk0p1 2>/dev/null
+# 3) 卸载已挂上的多余挂载 + 删掉残留空目录
+for m in /mnt/mmcblk0p1 /mnt/mmcblk0p3 /mnt/mmcblk2p1 /mnt/mmcblk2p3; do
+	umount "$m" 2>/dev/null
+	findmnt -n "$m" >/dev/null 2>&1 || rmdir "$m" 2>/dev/null
+done
 exit 0
 EOF
 chmod +x "$UDIR/99-r28s-clean-mount"
@@ -139,20 +148,8 @@ else
 	echo "[5b] opt-partition init script not found, skip"
 fi
 
-# ---- 6) 移植官方 eMMC Tools (LuCI 应用) ----
-# 官方 friendlyarm/friendlywrt_device_common/emmc-tools/ 只有预编译 apk(无源码).
-# 官方用 install.sh 在构建时 apk --root add 离线装进 rootfs.
-# 我们把 apk 拷进固件 /root/, 首刷后用户手动 apk add --allow-untrusted 试装,
-# 验证与 ImmortalWrt APK 兼容后再固化(避免不兼容把构建搞挂).
-EMMC_SRC="$PATCH_DIR/emmc-tools"
-ROOT_FILES="$RK_DIR/armv8/base-files/root"
-if [ -f "$EMMC_SRC/luci-app-emmc-tools.apk" ]; then
-	mkdir -p "$ROOT_FILES/emmc-tools"
-	cp -f "$EMMC_SRC/luci-app-emmc-tools.apk" "$ROOT_FILES/emmc-tools/"
-	cp -f "$EMMC_SRC/luci-i18n-emmc-tools-zh-cn.apk" "$ROOT_FILES/emmc-tools/" 2>/dev/null || true
-	echo "[6] emmc-tools apk -> /root/emmc-tools/ (手动试装)"
-else
-	echo "[6] emmc-tools apk not found, skip"
-fi
+# 注: eMMC Tools 已移除(2026-09-28). 实测在 R28S 上无法正常使用——
+# 它是"从 SD 卡启动 → 烧录到板载 eMMC"的工具, 而 R28S 无 SD 卡槽使用场景
+# (系统直接在 116.5G 板载 eMMC 上跑), 页面提示"请改用 SD 卡烧录", 功能不适用.
 
 echo "===== Inject done ====="

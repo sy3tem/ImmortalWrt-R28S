@@ -80,6 +80,11 @@ start() {
 	[ -z "$UUID" ] && { logger -t r28s-opt "no UUID for $PART, abort"; return 0; }
 
 	mkdir -p /opt
+	# 关匿名挂载(双保险): 防止 block-mount 早期把本分区又挂到 /mnt/mmcblk0p3
+	# (fstab 里 /opt 项虽已写, 但下个启动 block-mount 早期读到前就 anon_mount 兜底挂 /mnt;
+	#  官方靠占位屏蔽, 我们直接关掉 anon_mount 最干净)
+	uci set fstab.@global[0].anon_mount='0'
+	uci set fstab.@global[0].anon_swap='0'
 	# 清掉其它自动挂载项(boot 分区 /mnt/mmcblk0p1 等), 只保留 /opt
 	while uci -q del fstab.@mount[-1]; do true; done
 	uci add fstab mount
@@ -87,7 +92,11 @@ start() {
 	uci set fstab.@mount[-1].uuid="$UUID"
 	uci set fstab.@mount[-1].enabled="1"
 	uci commit fstab
-	umount /mnt/mmcblk0p1 2>/dev/null
+	# 卸载多余挂载 + 删残留空目录
+	for m in /mnt/mmcblk0p1 /mnt/mmcblk0p3 /mnt/mmcblk2p1 /mnt/mmcblk2p3; do
+		umount "$m" 2>/dev/null
+		findmnt -n "$m" >/dev/null 2>&1 || rmdir "$m" 2>/dev/null
+	done
 
 	mount -t ext4 -o noatime "UUID=$UUID" /opt 2>&1 | logger -t r28s-opt || \
 		mount "$PART" /opt 2>&1 | logger -t r28s-opt
