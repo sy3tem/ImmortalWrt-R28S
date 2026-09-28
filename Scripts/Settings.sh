@@ -32,6 +32,10 @@ CFG_FILE="./package/base-files/files/bin/config_generate"
 sed -i "s/192\.168\.[0-9]*\.[0-9]*/$WRT_IP/g" $CFG_FILE
 #修改默认主机名
 sed -i "s/hostname='.*'/hostname='$WRT_NAME'/g" $CFG_FILE
+#修改默认时区为北京时间(Asia/Shanghai, POSIX写法 CST-8; 默认是 timezone='GMT0' zonename='UTC')
+sed -i "s/timezone='GMT0'/timezone='CST-8'/g" $CFG_FILE
+sed -i "s/zonename='UTC'/zonename='Asia\\/Shanghai'/g" $CFG_FILE
+echo "default timezone set to Asia/Shanghai (CST-8)!"
 
 #修改默认root密码为 password (默认为空, 写 /etc/shadow, MD5crypt 哈希)
 echo 'root:$1$4C5K7.$KQSzgarR6TWvov9ZTlKPS0:0:0:99999:7:::' > ./package/base-files/files/etc/shadow
