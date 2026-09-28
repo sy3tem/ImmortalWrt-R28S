@@ -41,7 +41,7 @@ echo "default root password set to 'password'!"
 echo "CONFIG_PACKAGE_luci=y" >> ./.config
 echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
 echo "CONFIG_PACKAGE_luci-theme-$WRT_THEME=y" >> ./.config
-echo "CONFIG_PACKAGE_luci-app-$WRT_THEME-config=y" >> ./.config
+#注: 不装 luci-app-$WRT_THEME-config(主题配置器), 用主题原始状态(用户要求删除 argon-config)
 
 #apk软件源改国内镜像(SJTU上海交大, snapshots滚动版; 刷机后apk install走国内不卡)
 #VERSION_REPO 是编译变量, 写进 /etc/apk/repositories.d/distfeeds.list

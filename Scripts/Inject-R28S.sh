@@ -120,6 +120,25 @@ EOF
 chmod +x "$UDIR/99-r28s-clean-mount"
 echo "[5] uci-defaults clean-mount installed"
 
+# ---- 5b) /opt 大分区(剩余空间) init.d 服务 ----
+# 照搬官方 friendlywrt 的 /opt 大分区行为. 官方是编译期预建 opt:grow 分区(sd-fuse 打包),
+# 我们 ImmortalWrt 不走那套, 改方案B: 首启新建分区占满剩余空间 + ext4 + 挂 /opt.
+# 运行中的系统盘新建分区后内核拒读分区表须 reboot, 故用 init.d 两段式(非 uci-defaults).
+# 脚本本体在 target-patch/opt-partition/r28s-opt-partition.init, 已在真机验证通过.
+OPT_INIT_SRC="$PATCH_DIR/opt-partition/r28s-opt-partition.init"
+INITD="$RK_DIR/armv8/base-files/etc/init.d"
+RCD="$RK_DIR/armv8/base-files/etc/rc.d"
+if [ -f "$OPT_INIT_SRC" ]; then
+	mkdir -p "$INITD" "$RCD"
+	cp -f "$OPT_INIT_SRC" "$INITD/r28s-opt-partition"
+	chmod +x "$INITD/r28s-opt-partition"
+	# 开机自启软链
+	ln -sf ../init.d/r28s-opt-partition "$RCD/S99r28s-opt-partition"
+	echo "[5b] /opt big-partition init.d service installed"
+else
+	echo "[5b] opt-partition init script not found, skip"
+fi
+
 # ---- 6) 移植官方 eMMC Tools (LuCI 应用) ----
 # 官方 friendlyarm/friendlywrt_device_common/emmc-tools/ 只有预编译 apk(无源码).
 # 官方用 install.sh 在构建时 apk --root add 离线装进 rootfs.

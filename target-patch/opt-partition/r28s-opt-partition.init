@@ -1,0 +1,96 @@
+#!/bin/sh /etc/rc.common
+# R28S: 把磁盘剩余空间做成大分区并挂载到 /opt (照搬官方 friendlywrt 思路)
+# 官方是编译期预建 opt:grow 分区(走 sd-fuse 打包), 我们 ImmortalWrt 不走那套,
+# 改用方案B: 首启在 rootfs 分区后新建分区占满剩余空间, 格式化 ext4, 挂 /opt.
+#
+# 为什么用 init.d 而不是 uci-defaults:
+#   运行中的系统盘(rootfs 在用)新建分区后, 内核拒绝重读分区表(Resource busy),
+#   必须 reboot 一次内核才识别新分区. 所以拆两段:
+#     第1次启动: 写分区表 -> 内核未识别 -> reboot
+#     第2次启动: 新分区已出现 -> mkfs.ext4 -> 挂 /opt (幂等, 之后每次启动跳过)
+#   uci-defaults 只在首启跑一次, reboot 后不会重跑, 做不到两段式, 故用 init.d.
+START=99
+
+start() {
+	for c in sfdisk mkfs.ext4 blkid lsblk uci; do
+		command -v "$c" >/dev/null 2>&1 || { logger -t r28s-opt "missing $c, skip"; return 0; }
+	done
+
+	# /opt 已是独立分区挂载点则跳过(幂等; /opt/docker 是 overlay bind 不算)
+	if awk '$2=="/opt"{f=1}END{exit !f}' /proc/mounts 2>/dev/null; then
+		return 0
+	fi
+	# fstab 已有 /opt 项且对应分区已挂载也跳过
+	if uci -q show fstab | grep -q "\.target='\/opt'" && findmnt -n /opt >/dev/null 2>&1; then
+		return 0
+	fi
+
+	# 找系统盘: /rom 源是 /dev/root 符号, 用 lsblk 解析真实设备
+	local ROMPART DISK
+	ROMPART=$(lsblk -nr -o PATH,MOUNTPOINT | awk '$2=="/rom"{print $1; exit}')
+	case "$ROMPART" in
+	/dev/mmcblk*p*) DISK="${ROMPART%p*}" ;;
+	*)
+		DISK=""
+		for d in /dev/mmcblk0 /dev/mmcblk1 /dev/mmcblk2; do
+			[ -b "${d}p2" ] && { DISK="$d"; break; }
+		done
+		;;
+	esac
+	[ -b "$DISK" ] || { logger -t r28s-opt "system disk not found, skip"; return 0; }
+
+	# 已有 LABEL=opt 分区则复用; 否则看是否需要新建
+	local PART
+	PART=$(blkid -L opt 2>/dev/null)
+	if [ -z "$PART" ]; then
+		local LASTNUM NEWPART MAXSTART
+		LASTNUM=$(lsblk -nr -o NAME "$DISK" | grep -oE 'p[0-9]+$' | tr -d 'p' | sort -n | tail -1)
+		[ -z "$LASTNUM" ] && { logger -t r28s-opt "no partition, skip"; return 0; }
+		NEWPART=$((LASTNUM + 1))
+		PART="${DISK}p${NEWPART}"
+		if [ ! -b "$PART" ]; then
+			# 选最大空闲块起始扇区
+			MAXSTART=$(sfdisk -F "$DISK" 2>/dev/null | awk '/^ *[0-9]+ +[0-9]+ +[0-9]+/{print $1, $3}' | sort -k2 -n | tail -1 | awk '{print $1}')
+			[ -z "$MAXSTART" ] && { logger -t r28s-opt "no free space, skip"; return 0; }
+			logger -t r28s-opt "create $PART from sector $MAXSTART (largest free space)"
+			echo "${MAXSTART},,L," | sfdisk -a --force --no-reread "$DISK" 2>&1 | logger -t r28s-opt
+			sync
+			# 内核未识别新分区(磁盘在用) -> reboot 让内核重读
+			if [ ! -b "$PART" ]; then
+				logger -t r28s-opt "partition table written, reboot to recognize $PART"
+				sleep 2
+				reboot
+				return 0
+			fi
+		fi
+	fi
+
+	[ -b "$PART" ] || { logger -t r28s-opt "$PART not present, abort"; return 0; }
+
+	# 格式化 ext4 (若无文件系统)
+	local FS UUID
+	FS=$(blkid -o value -s TYPE "$PART" 2>/dev/null)
+	if [ "$FS" != "ext4" ]; then
+		logger -t r28s-opt "mkfs.ext4 on $PART"
+		mkfs.ext4 -F -L opt "$PART" 2>&1 | logger -t r28s-opt
+		sync
+	fi
+
+	UUID=$(blkid -o value -s UUID "$PART" 2>/dev/null)
+	[ -z "$UUID" ] && { logger -t r28s-opt "no UUID for $PART, abort"; return 0; }
+
+	mkdir -p /opt
+	# 清掉其它自动挂载项(boot 分区 /mnt/mmcblk0p1 等), 只保留 /opt
+	while uci -q del fstab.@mount[-1]; do true; done
+	uci add fstab mount
+	uci set fstab.@mount[-1].target="/opt"
+	uci set fstab.@mount[-1].uuid="$UUID"
+	uci set fstab.@mount[-1].enabled="1"
+	uci commit fstab
+	umount /mnt/mmcblk0p1 2>/dev/null
+
+	mount -t ext4 -o noatime "UUID=$UUID" /opt 2>&1 | logger -t r28s-opt || \
+		mount "$PART" /opt 2>&1 | logger -t r28s-opt
+	logger -t r28s-opt "$PART ($UUID) mounted at /opt"
+	return 0
+}
