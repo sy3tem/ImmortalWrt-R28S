@@ -427,10 +427,12 @@
 	status = "okay";
 };
 
-/* WiFi: AIC8800 on SDIO0
- * 时序保守用 cap-sd-highspeed(<=50MHz), 不用 sd-uhs-sdr104 —
- * AIC8800 对高速敏感, 主线跑 SDR104 会 "error -84 whilst initialising SDIO card"
- * + aic8800_fdrv 探针失败(实测). vqmmc 用 1.8V IO.
+/* WiFi: AIC8800 on SDIO0 — 完全照抄官方 rev03 写法(实测官方 WiFi 正常).
+ * 必须带 sd-uhs-sdr104: AIC8800 IO 是 1.8V, 需要 sd-uhs-sdr104 触发 MMC 走
+ * UHS-I 初始化(CMD11 电压切换到 1.8V 信号), 否则卡在 3.3V 电平硬跑高速,
+ * 读 CIS/CCCR CRC 错 → "error -84 whilst initialising SDIO card"(实测).
+ * 之前删 sd-uhs-sdr104 是误判——真正 -84 根因是 PCIe/SDIO gpio1 引脚冲突
+ * (已在 b88ec30 修复), SDR104 是被冤枉的. 官方 150MHz/SDR104 实测正常.
  */
 &sdio0 {
 	max-frequency = <150000000>;
@@ -446,6 +448,7 @@
 	mmc-pwrseq = <&sdio_pwrseq>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdio0_bus4>, <&sdio0_cmd>, <&sdio0_clk>;
+	sd-uhs-sdr104;
 	vqmmc-supply = <&vcc_1v8>;
 	status = "okay";
 };
