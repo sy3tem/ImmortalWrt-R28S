@@ -114,11 +114,12 @@ if uci -q get network.iptv >/dev/null && ! uci -q get firewall.iptv >/dev/null; 
 	uci set firewall.iptv.mtu_fix='0'
 	uci commit firewall
 
-	# 2) IGMP 固化为 v2(all 兜底 + iptv 物理口/隧道口), 运营商 IPTV 只认 v2
+	# 2) IGMP 固化为 v2(all/default 兜底 + iptv 物理口/隧道口), 运营商 IPTV 只认 v2
 	echo 2 > /proc/sys/net/ipv4/conf/all/force_igmp_version 2>/dev/null
+	echo 2 > /proc/sys/net/ipv4/conf/default/force_igmp_version 2>/dev/null
 	echo 2 > /proc/sys/net/ipv4/conf/pppoe-iptv/force_igmp_version 2>/dev/null
 	echo 2 > /proc/sys/net/ipv4/conf/eth0.45/force_igmp_version 2>/dev/null
-	# 持久化 IGMP v2(sysctl.d, 每次 boot 生效)
+	# 持久化 IGMP v2(sysctl.conf, 每次 boot 生效)
 	grep -q 'force_igmp_version' /etc/sysctl.conf 2>/dev/null || cat >> /etc/sysctl.conf <<'SYSCTL'
 net.ipv4.conf.all.force_igmp_version=2
 net.ipv4.conf.default.force_igmp_version=2
@@ -132,21 +133,39 @@ EOF
 chmod +x "$UDIR/97-iptv-multicast"
 echo "uci-defaults 97-iptv-multicast installed!"
 
-#配套: hotplug 脚本——pppoe-iptv 每次拨号(up)后自动补组播路由+IGMP v2
-#(pppoe 接口是动态重建的, uci-defaults 只在首启跑一次, 之后每次重连都要靠 hotplug 补)
+#配套: hotplug 脚本——pppoe-iptv 每次拨号(up)后自动补 组播路由+IGMP v2+防火墙 zone
+#(pppoe 接口是动态重建的, 且用户常在开机后才手动加 iptv 接口——uci-defaults 只首启跑一次,
+# 若那时 iptv 还没建, 建 zone 步骤会被跳过. 故把 建zone+路由+IGMP 全部交给 hotplug 兜底,
+# 接口一 up 就自动就绪, 不依赖 uci-defaults 是否撞上 iptv 已存在)
 HOTDIR="./package/base-files/files/etc/hotplug.d/iface"
 mkdir -p "$HOTDIR"
 cat > "$HOTDIR/97-iptv-multicast" <<'EOF'
 #!/bin/sh
-# pppoe-iptv 接口 up 时: 补组播路由 + IGMP v2(接口重建后这些会丢)
+# iptv 接口 up 时: 建防火墙 zone(若缺) + 补组播路由 + IGMP v2(接口重建后这些会丢)
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "iptv" ] || exit 0
 sleep 2
 DEV="pppoe-iptv"
+# 1) 组播路由指向 IPTV 隧道口(否则走 pppoe-wan 上网口, IGMP 发错口)
 ip route replace 224.0.0.0/4 dev "$DEV" 2>/dev/null
 ip route replace 239.0.0.0/8 dev "$DEV" 2>/dev/null
+# 2) IGMP v2(运营商 IPTV 只认 v2)
 echo 2 > /proc/sys/net/ipv4/conf/"$DEV"/force_igmp_version 2>/dev/null
 echo 2 > /proc/sys/net/ipv4/conf/eth0.45/force_igmp_version 2>/dev/null
+echo 2 > /proc/sys/net/ipv4/conf/all/force_igmp_version 2>/dev/null
+# 3) 防火墙 zone(若缺则建并重载): 独立 iptv zone 不开 masq, 组播绕开 fullcone NAT 直接放行
+if ! uci -q get firewall.iptv >/dev/null; then
+	uci set firewall.iptv='zone'
+	uci set firewall.iptv.name='iptv'
+	uci set firewall.iptv.network='iptv'
+	uci set firewall.iptv.input='ACCEPT'
+	uci set firewall.iptv.output='ACCEPT'
+	uci set firewall.iptv.forward='DROP'
+	uci set firewall.iptv.masq='0'
+	uci set firewall.iptv.mtu_fix='0'
+	uci commit firewall
+	/etc/init.d/firewall reload
+fi
 exit 0
 EOF
 chmod +x "$HOTDIR/97-iptv-multicast"
