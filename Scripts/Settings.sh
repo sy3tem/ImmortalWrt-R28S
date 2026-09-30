@@ -89,71 +89,19 @@ chmod +x "$UDIR/98-ipv6-relay"
 echo "uci-defaults 98-ipv6-relay installed!"
 
 #首启脚本: IPTV 组播转单播(rtp2httpd)防火墙+路由+IGMP 一键就绪(2026-09-30 真机反复试错定案)
-#适用场景: 双 PPPoE(上网 wan + IPTV 专网 iptv), rtp2httpd 跑在路由器上, 组播从 pppoe-iptv 进.
-#★根因与三要素(血泪): 
-#  1) 组播路由默认走上网口 pppoe-wan, IGMP 加组发错口 → 必须把组播路由指到 pppoe-iptv;
-#  2) 组播 UDP 会被 wan zone 的 fullcone NAT/conntrack 误处理, 且 wan 链 iifname 只绑 eth0/pppoe-wan
-#     匹配不到 pppoe-iptv → 必须建独立 iptv zone(按接口匹配, 不开 masq), 让组播绕开 NAT 直接放行;
+#适用场景: 双 WAN(上网 + IPTV 专网 iptv, 湖南电信), rtp2httpd 跑在路由器上, 组播从 iptv 口进.
+#★根因与三要素(血泪):
+#  1) 组播路由默认走上网口, IGMP 加组发错口 → 必须把组播路由指到 iptv 口;
+#  2) 组播 UDP 会被 wan zone 的 fullcone NAT/conntrack 误处理, 且 wan 链 iifname 只绑上网设备
+#     匹配不到 iptv 口 → 必须建独立 iptv zone(按接口匹配, 不开 masq), 让组播绕开 NAT 直接放行;
 #  3) 运营商 IPTV 用 IGMPv2 → force_igmp_version=2(实测 v3/auto 收不到流).
-#★为什么用 zone 而不是 IP 段规则: 不同运营商组播地址不一定是 224.0.0.0/4, 按接口(pppoe-iptv)
-#  匹配最通用——不管组播源/组地址是什么, 从 iptv 口进来就放行+绕 NAT.
-#幂等: 仅当 network.iptv 接口存在且 firewall.iptv zone 未建时才写入, 不影响无 IPTV 的场景.
+#★为什么用 zone 而不是 IP 段规则: 不同运营商组播地址不一定是 224.0.0.0/4, 按接口匹配最通用.
+#★对齐 JDC 8c5e81f 的「接口后建漏建」修复: zone 是防火墙规则容器, 建不建跟 iptv 接口存不存在、
+#  up不up完全无关 → uci-defaults 无条件先建 zone(不等接口); 接口判断只用于组播路由/IGMP 这类
+#  跟接口设备绑定的部分(交给 hotplug, 接口 up 时取到 DEV 再补).
 cat > "$UDIR/97-iptv-multicast" <<'EOF'
 #!/bin/sh
-# 仅当存在 iptv 逻辑接口(双 PPPoE 的 IPTV 专网)时才启用
-if uci -q get network.iptv >/dev/null && ! uci -q get firewall.iptv >/dev/null; then
-	# 1) 独立 iptv 防火墙 zone: 绑定 iptv 接口(内核设备 pppoe-iptv), 不开 masq/fullcone
-	#    input=ACCEPT → 组播 UDP/IGMP 从 iptv 口进来直接放行, 绕开 wan 的 NAT/conntrack 误处理
-	uci set firewall.iptv='zone'
-	uci set firewall.iptv.name='iptv'
-	uci set firewall.iptv.network='iptv'
-	uci set firewall.iptv.input='ACCEPT'
-	uci set firewall.iptv.output='ACCEPT'
-	uci set firewall.iptv.forward='DROP'
-	uci set firewall.iptv.masq='0'
-	uci set firewall.iptv.mtu_fix='0'
-	uci commit firewall
-
-	# 2) IGMP 固化为 v2(all/default 兜底 + iptv 物理口/隧道口), 运营商 IPTV 只认 v2
-	echo 2 > /proc/sys/net/ipv4/conf/all/force_igmp_version 2>/dev/null
-	echo 2 > /proc/sys/net/ipv4/conf/default/force_igmp_version 2>/dev/null
-	echo 2 > /proc/sys/net/ipv4/conf/pppoe-iptv/force_igmp_version 2>/dev/null
-	echo 2 > /proc/sys/net/ipv4/conf/eth0.45/force_igmp_version 2>/dev/null
-	# 持久化 IGMP v2(sysctl.conf, 每次 boot 生效)
-	grep -q 'force_igmp_version' /etc/sysctl.conf 2>/dev/null || cat >> /etc/sysctl.conf <<'SYSCTL'
-net.ipv4.conf.all.force_igmp_version=2
-net.ipv4.conf.default.force_igmp_version=2
-SYSCTL
-
-	# 3) 组播路由指向 pppoe-iptv(运行时立即生效; 持久化由下方 hotplug 脚本保证)
-	ip route replace 224.0.0.0/4 dev pppoe-iptv 2>/dev/null
-fi
-exit 0
-EOF
-chmod +x "$UDIR/97-iptv-multicast"
-echo "uci-defaults 97-iptv-multicast installed!"
-
-#配套: hotplug 脚本——pppoe-iptv 每次拨号(up)后自动补 组播路由+IGMP v2+防火墙 zone
-#(pppoe 接口是动态重建的, 且用户常在开机后才手动加 iptv 接口——uci-defaults 只首启跑一次,
-# 若那时 iptv 还没建, 建 zone 步骤会被跳过. 故把 建zone+路由+IGMP 全部交给 hotplug 兜底,
-# 接口一 up 就自动就绪, 不依赖 uci-defaults 是否撞上 iptv 已存在)
-HOTDIR="./package/base-files/files/etc/hotplug.d/iface"
-mkdir -p "$HOTDIR"
-cat > "$HOTDIR/97-iptv-multicast" <<'EOF'
-#!/bin/sh
-# iptv 接口 up 时: 建防火墙 zone(若缺) + 补组播路由 + IGMP v2(接口重建后这些会丢)
-[ "$ACTION" = "ifup" ] || exit 0
-[ "$INTERFACE" = "iptv" ] || exit 0
-sleep 2
-DEV="pppoe-iptv"
-# 1) 组播路由指向 IPTV 隧道口(否则走 pppoe-wan 上网口, IGMP 发错口)
-ip route replace 224.0.0.0/4 dev "$DEV" 2>/dev/null
-ip route replace 239.0.0.0/8 dev "$DEV" 2>/dev/null
-# 2) IGMP v2(运营商 IPTV 只认 v2)
-echo 2 > /proc/sys/net/ipv4/conf/"$DEV"/force_igmp_version 2>/dev/null
-echo 2 > /proc/sys/net/ipv4/conf/eth0.45/force_igmp_version 2>/dev/null
-echo 2 > /proc/sys/net/ipv4/conf/all/force_igmp_version 2>/dev/null
-# 3) 防火墙 zone(若缺则建并重载): 独立 iptv zone 不开 masq, 组播绕开 fullcone NAT 直接放行
+# 无条件先建 iptv zone(zone 是规则容器, 不依赖 iptv 接口存在/up; 幂等)
 if ! uci -q get firewall.iptv >/dev/null; then
 	uci set firewall.iptv='zone'
 	uci set firewall.iptv.name='iptv'
@@ -164,8 +112,57 @@ if ! uci -q get firewall.iptv >/dev/null; then
 	uci set firewall.iptv.masq='0'
 	uci set firewall.iptv.mtu_fix='0'
 	uci commit firewall
-	/etc/init.d/firewall reload
 fi
+# IGMP v2 持久化(sysctl.conf, 每次 boot 生效; all/default 兜底, 具体接口由 hotplug 补)
+echo 2 > /proc/sys/net/ipv4/conf/all/force_igmp_version 2>/dev/null
+echo 2 > /proc/sys/net/ipv4/conf/default/force_igmp_version 2>/dev/null
+grep -q 'force_igmp_version' /etc/sysctl.conf 2>/dev/null || cat >> /etc/sysctl.conf <<'SYSCTL'
+net.ipv4.conf.all.force_igmp_version=2
+net.ipv4.conf.default.force_igmp_version=2
+SYSCTL
+exit 0
+EOF
+chmod +x "$UDIR/97-iptv-multicast"
+echo "uci-defaults 97-iptv-multicast installed!"
+
+#配套: hotplug 脚本——iptv 接口 ifup/ifupdate/update 时: 先无条件建 zone, 再取 DEV 补组播路由+IGMP v2
+#(uci-defaults 只首启跑一次且接口可能开机后才建; pppoe/dhcp 接口又是动态重建. 故 zone+路由+IGMP
+# 全部由 hotplug 兜底: zone 不等接口 up, 路由/IGMP 需 DEV 才补, 取不到 DEV 跳过但 zone 照建.
+# 触发放宽到 ifup|ifupdate|update, 覆盖「先建接口后 up」和「改接口」两种场景)
+HOTDIR="./package/base-files/files/etc/hotplug.d/iface"
+mkdir -p "$HOTDIR"
+cat > "$HOTDIR/97-iptv-multicast" <<'EOF'
+#!/bin/sh
+# IPTV 组播三要素 hotplug 兜底: iptv 接口 up/更新 时补建 zone+组播路由+IGMPv2
+case "$ACTION" in
+	ifup|ifupdate|update) ;;
+	*) exit 0 ;;
+esac
+[ "$INTERFACE" = "iptv" ] || exit 0
+
+# 1) zone 无条件建(不等接口 up/取 DEV; 幂等)
+if ! uci -q get firewall.iptv >/dev/null; then
+	uci set firewall.iptv='zone'
+	uci set firewall.iptv.name='iptv'
+	uci set firewall.iptv.network='iptv'
+	uci set firewall.iptv.input='ACCEPT'
+	uci set firewall.iptv.output='ACCEPT'
+	uci set firewall.iptv.forward='DROP'
+	uci set firewall.iptv.masq='0'
+	uci set firewall.iptv.mtu_fix='0'
+	uci commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1
+fi
+
+# 2) 取接口实际设备 DEV(双路径): 优先 ubus 运行时 l3_device, 取不到退 uci 配置的 device
+DEV=$(ubus call network.interface.iptv status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)
+[ -z "$DEV" ] && DEV=$(uci -q get network.iptv.device 2>/dev/null)
+[ -z "$DEV" ] && exit 0   # 取不到 DEV 则跳过路由/IGMP, 但 zone 已在上面建好
+
+# 3) 组播路由指向 iptv 口(否则走上网口, IGMP 发错口) + IGMP v2(运营商 IPTV 只认 v2)
+ip route replace 224.0.0.0/4 dev "$DEV" 2>/dev/null
+ip route replace 239.0.0.0/8 dev "$DEV" 2>/dev/null
+echo 2 > /proc/sys/net/ipv4/conf/"$DEV"/force_igmp_version 2>/dev/null
 exit 0
 EOF
 chmod +x "$HOTDIR/97-iptv-multicast"
