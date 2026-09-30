@@ -88,6 +88,70 @@ EOF
 chmod +x "$UDIR/98-ipv6-relay"
 echo "uci-defaults 98-ipv6-relay installed!"
 
+#首启脚本: IPTV 组播转单播(rtp2httpd)防火墙+路由+IGMP 一键就绪(2026-09-30 真机反复试错定案)
+#适用场景: 双 PPPoE(上网 wan + IPTV 专网 iptv), rtp2httpd 跑在路由器上, 组播从 pppoe-iptv 进.
+#★根因与三要素(血泪): 
+#  1) 组播路由默认走上网口 pppoe-wan, IGMP 加组发错口 → 必须把组播路由指到 pppoe-iptv;
+#  2) 组播 UDP 会被 wan zone 的 fullcone NAT/conntrack 误处理, 且 wan 链 iifname 只绑 eth0/pppoe-wan
+#     匹配不到 pppoe-iptv → 必须建独立 iptv zone(按接口匹配, 不开 masq), 让组播绕开 NAT 直接放行;
+#  3) 运营商 IPTV 用 IGMPv2 → force_igmp_version=2(实测 v3/auto 收不到流).
+#★为什么用 zone 而不是 IP 段规则: 不同运营商组播地址不一定是 224.0.0.0/4, 按接口(pppoe-iptv)
+#  匹配最通用——不管组播源/组地址是什么, 从 iptv 口进来就放行+绕 NAT.
+#幂等: 仅当 network.iptv 接口存在且 firewall.iptv zone 未建时才写入, 不影响无 IPTV 的场景.
+cat > "$UDIR/97-iptv-multicast" <<'EOF'
+#!/bin/sh
+# 仅当存在 iptv 逻辑接口(双 PPPoE 的 IPTV 专网)时才启用
+if uci -q get network.iptv >/dev/null && ! uci -q get firewall.iptv >/dev/null; then
+	# 1) 独立 iptv 防火墙 zone: 绑定 iptv 接口(内核设备 pppoe-iptv), 不开 masq/fullcone
+	#    input=ACCEPT → 组播 UDP/IGMP 从 iptv 口进来直接放行, 绕开 wan 的 NAT/conntrack 误处理
+	uci set firewall.iptv='zone'
+	uci set firewall.iptv.name='iptv'
+	uci set firewall.iptv.network='iptv'
+	uci set firewall.iptv.input='ACCEPT'
+	uci set firewall.iptv.output='ACCEPT'
+	uci set firewall.iptv.forward='DROP'
+	uci set firewall.iptv.masq='0'
+	uci set firewall.iptv.mtu_fix='0'
+	uci commit firewall
+
+	# 2) IGMP 固化为 v2(all 兜底 + iptv 物理口/隧道口), 运营商 IPTV 只认 v2
+	echo 2 > /proc/sys/net/ipv4/conf/all/force_igmp_version 2>/dev/null
+	echo 2 > /proc/sys/net/ipv4/conf/pppoe-iptv/force_igmp_version 2>/dev/null
+	echo 2 > /proc/sys/net/ipv4/conf/eth0.45/force_igmp_version 2>/dev/null
+	# 持久化 IGMP v2(sysctl.d, 每次 boot 生效)
+	grep -q 'force_igmp_version' /etc/sysctl.conf 2>/dev/null || cat >> /etc/sysctl.conf <<'SYSCTL'
+net.ipv4.conf.all.force_igmp_version=2
+net.ipv4.conf.default.force_igmp_version=2
+SYSCTL
+
+	# 3) 组播路由指向 pppoe-iptv(运行时立即生效; 持久化由下方 hotplug 脚本保证)
+	ip route replace 224.0.0.0/4 dev pppoe-iptv 2>/dev/null
+fi
+exit 0
+EOF
+chmod +x "$UDIR/97-iptv-multicast"
+echo "uci-defaults 97-iptv-multicast installed!"
+
+#配套: hotplug 脚本——pppoe-iptv 每次拨号(up)后自动补组播路由+IGMP v2
+#(pppoe 接口是动态重建的, uci-defaults 只在首启跑一次, 之后每次重连都要靠 hotplug 补)
+HOTDIR="./package/base-files/files/etc/hotplug.d/iface"
+mkdir -p "$HOTDIR"
+cat > "$HOTDIR/97-iptv-multicast" <<'EOF'
+#!/bin/sh
+# pppoe-iptv 接口 up 时: 补组播路由 + IGMP v2(接口重建后这些会丢)
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$INTERFACE" = "iptv" ] || exit 0
+sleep 2
+DEV="pppoe-iptv"
+ip route replace 224.0.0.0/4 dev "$DEV" 2>/dev/null
+ip route replace 239.0.0.0/8 dev "$DEV" 2>/dev/null
+echo 2 > /proc/sys/net/ipv4/conf/"$DEV"/force_igmp_version 2>/dev/null
+echo 2 > /proc/sys/net/ipv4/conf/eth0.45/force_igmp_version 2>/dev/null
+exit 0
+EOF
+chmod +x "$HOTDIR/97-iptv-multicast"
+echo "hotplug.d/iface/97-iptv-multicast installed!"
+
 #配置文件修改
 echo "CONFIG_PACKAGE_luci=y" >> ./.config
 echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
