@@ -47,10 +47,21 @@ UPDATE_PACKAGE() {
 # UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-appfilter oaf" 这样会把原有的open-app-filter，luci-app-appfilter，oaf相关组件删除，不会出现coremark错误。
 
 # UPDATE_PACKAGE "包名" "项目地址" "项目分支" "pkg/name，可选，pkg为从大杂烩中单独提取包名插件；name为重命名为包名"
-#argon 主题源: sbwml(备份fork) → 换成 jerrykuku 官方原版(原作者, master 活跃维护, v2.4.7)
+#argon 主题源: jerrykuku 官方原版(原作者, master 活跃维护, 当前 v3.0.0)
 #jerrykuku 仓库根就是包(Makefile/htdocs/root/ucode 在顶层), 默认模式克隆出 luci-theme-argon/ 目录
 #正好落在 package/ 下, 包名=luci-theme-argon 与 CONFIG_PACKAGE_luci-theme-argon 对上; 官方默认背景 bg1.jpg
-UPDATE_PACKAGE "luci-theme-argon" "jerrykuku/luci-theme-argon" "master"
+#★★ 2026-10-21 修编译失败(真实根因): v3.0.0 的 Makefile 里 LUCI_BASENAME:=argon-config, 会生成
+#   luci-i18n-argon-config-zh-cn 翻译包; 而官方 feeds 里旧的 luci-app-argon-config 也会生成同名翻译包
+#   (DEPENDS 指向 luci-app-argon-config 自己). 两个同名包互相覆盖, 最终 rootfs 安装阶段报
+#   "luci-app-argon-config (no such package) -> make[2]: package/install Error 2", 编译直接失败.
+#   修法: 删掉 feeds 版旧包(第5参数), 并清理 feeds install 留下的符号链接; 再换成主题仓库自带的
+#   compat 空壳包(只做旧配置迁移, 无 GUI), 这样即使某个集合/配置仍引用 luci-app-argon-config 也能解析,
+#   但不会把老的 argon 配置界面装回固件(符合「不装 luci-app-$WRT_THEME-config」的要求).
+UPDATE_PACKAGE "luci-theme-argon" "jerrykuku/luci-theme-argon" "master" "" "luci-app-argon-config"
+rm -rf ./feeds/luci/luci-app-argon-config ./luci-app-argon-config
+if [ -d ./luci-theme-argon/compat/luci-app-argon-config ]; then
+	cp -rf ./luci-theme-argon/compat/luci-app-argon-config ./luci-app-argon-config
+fi
 UPDATE_PACKAGE "aurora" "eamonxg/luci-theme-aurora" "master"
 UPDATE_PACKAGE "aurora-config" "eamonxg/luci-app-aurora-config" "master"
 UPDATE_PACKAGE "kucat" "sirpdboy/luci-theme-kucat" "master"

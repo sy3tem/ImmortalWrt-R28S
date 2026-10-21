@@ -23,4 +23,11 @@ jobs:
         uses: actions/checkout@main
 
       - name: Cache Clean
-        run: gh cache delete --all
+        run: |
+          # gh cache delete --all 在「当前没有任何缓存」时返回 exit 1 ("X No caches to delete"),
+          # 会把整条定时任务标记成 failure. 先判空, 没缓存就直接正常退出.
+          if [ -z "$(gh cache list --limit 1)" ]; then
+            echo "No caches to delete."
+            exit 0
+          fi
+          gh cache delete --all
