@@ -68,23 +68,55 @@ jobs:
         uses: actions/checkout@main
 
       - name: Initialization Environment
+        # 只装编译必需依赖。原来那套 apt full-upgrade + 官方 init_build_environment.sh
+        # 在 ubuntu-latest 滚到 26.04 之后直接失败：
+        #   [ERROR] Unsupported OS, use Ubuntu 20.04 instead.
+        # 该脚本只识别到 noble / trixie，没有 26.04 的 codename，于是 job 在第一步就挂。
+        # full-upgrade 本身也极慢（历史 run 跑过三小时），一并去掉。
+        # 依赖清单与 ImmortalWrt-CI 仓库一致，已在 26.04 runner 上验证可完整编译 RK/QCA。
+        timeout-minutes: 25
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo -E apt -yqq purge firefox
-          sudo -E apt -yqq update
-          sudo -E apt -yqq full-upgrade
-          sudo -E apt -yqq autoremove --purge
-          sudo -E apt -yqq autoclean
-          sudo -E apt -yqq clean
-          sudo -E apt -yqq install dos2unix libfuse-dev
-          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          set -o pipefail
+
+          sudo -E apt-get -yq update
+          sudo -E apt-get -yq purge firefox 2>/dev/null || true
+
+          DEPS="build-essential gcc g++ make gawk gettext git libncurses-dev libssl-dev \
+            libgnutls28-dev python3 python3-dev python3-pyelftools python3-setuptools \
+            rsync unzip zlib1g-dev file wget curl subversion flex bison bc cpio time \
+            swig libelf-dev liblzma-dev device-tree-compiler u-boot-tools ccache \
+            dos2unix libfuse-dev zstd xxd patch diffstat quilt autoconf automake \
+            libtool pkg-config qemu-utils"
+          sudo -E apt-get -yq --no-install-recommends install $DEPS
+
+          # 这两个在 24.04 之后已被移除/改名，缺了不影响编译，逐个装并忽略缺失
+          for p in python3-distutils libncurses5-dev; do
+            sudo -E apt-get -yq install "$p" 2>/dev/null || echo "skip optional: $p"
+          done
+
+          # 需要官方脚本时把 WRT_SKIP_UPSTREAM 设为 0。默认跳过：它会拉 texlive 等
+          # 文档工具（固件用不到），且 8 分钟超时被杀后留下 half-configured 包，
+          # 引发 dpkg 锁冲突（见历史失败 run）。
+          if [ "${WRT_SKIP_UPSTREAM:-1}" != "1" ]; then
+            echo "== running upstream build-environment script (8 min cap) =="
+            sudo timeout 480 bash -c 'DEBIAN_FRONTEND=noninteractive bash <(curl -fsSL --max-time 60 https://build-scripts.immortalwrt.org/init_build_environment.sh)' \
+              || echo "WARN: upstream script failed or timed out; relying on the explicit dependency list above"
+            sudo dpkg --configure -a || true
+          else
+            echo "== skip upstream build-environment script (use explicit DEPS only) =="
+          fi
+
+          sudo -E apt-get -yq autoremove --purge
+          sudo -E apt-get -yq clean
           sudo -E systemctl daemon-reload
           sudo -E timedatectl set-timezone "Asia/Shanghai"
 
           sudo mkdir -p /mnt/build_wrt
           sudo chown $USER:$USER /mnt/build_wrt
-          sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
+          sudo ln -sfn /mnt/build_wrt $GITHUB_WORKSPACE/wrt
+          date -u
 
       - name: Initialization Values
         run: |
